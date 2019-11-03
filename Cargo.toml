@@ -1,0 +1,5 @@
+[workspace]
+members = [
+    "vemigrate",
+    "vemigrate-cli",
+]
