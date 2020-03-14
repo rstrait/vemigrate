@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)]
+
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fs::{File, ReadDir};
@@ -5,15 +7,15 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::{error, fmt, fs, io};
 
-pub const MIGRATION_FILE_UP: &'static str = "up.cql";
-pub const MIGRATION_FILE_DOWN: &'static str = "down.cql";
+pub const MIGRATION_FILE_UP: &str = "up.cql";
+pub const MIGRATION_FILE_DOWN: &str = "down.cql";
 
 const COMMENT_LENGTH: usize = 2;
-const COMMENT_LINE_TYPE_1: &'static str = "--";
-const COMMENT_LINE_TYPE_2: &'static str = "//";
+const COMMENT_LINE_TYPE_1: &str = "--";
+const COMMENT_LINE_TYPE_2: &str = "//";
 const QUERIES_SEPARATOR: char = ';';
 
-const NEW_FILE_CONTENT: &'static str = "-- Add your migration query below";
+const NEW_FILE_CONTENT: &str = "-- Add your migration query below";
 
 #[derive(Debug)]
 pub enum Error {
@@ -92,26 +94,29 @@ fn create_migration_file(path: PathBuf, q: Option<&[u8]>) -> std::io::Result<()>
     Ok(())
 }
 
-pub struct Migrator<'a, S>
+pub struct Migrator<S>
 where
     S: Store,
 {
-    path: &'a str,
+    path: PathBuf,
     store: S,
 }
 
-impl<'a, S> Migrator<'a, S>
+impl<S> Migrator<S>
 where
     S: Store,
 {
-    pub fn with_store(path: &'a str, store: S) -> Migrator<'a, S> {
-        Migrator { path, store }
+    pub fn with_store(path: &str, store: S) -> Migrator<S> {
+        Migrator {
+            path: path.into(),
+            store,
+        }
     }
 
     #[inline]
     fn migrate_n(&self, up: bool, n: Option<usize>) -> Result<Option<i64>> {
         // Try to read migrations dir first
-        let dir = fs::read_dir(self.path)?;
+        let dir = fs::read_dir(&self.path)?;
 
         let migration_history = self.get_migration_history()?;
         match self.filter_migrations(dir, migration_history, up)? {
@@ -183,29 +188,27 @@ where
             }
 
             let trimmed = buf.trim();
-            if trimmed.len() != 0 {
-                if !Self::is_cql_comment_line(trimmed) {
-                    if is_new_query {
-                        queries.push(String::new());
-                    }
-                    if trimmed.chars().last().unwrap() == QUERIES_SEPARATOR {
-                        is_new_query = true
-                    } else {
-                        is_new_query = false
-                    }
+            if !trimmed.is_empty() && !Self::is_cql_comment_line(trimmed) {
+                if is_new_query {
+                    queries.push(String::new());
+                }
+                if trimmed.chars().last().unwrap() == QUERIES_SEPARATOR {
+                    is_new_query = true
+                } else {
+                    is_new_query = false
+                }
 
-                    if queries.len() == 0 {
-                        queries.push(trimmed.to_string());
-                    } else {
-                        queries.last_mut().unwrap().push_str(trimmed);
-                    }
+                if queries.is_empty() {
+                    queries.push(trimmed.to_string());
+                } else {
+                    queries.last_mut().unwrap().push_str(trimmed);
                 }
             }
 
             buf.clear();
         }
 
-        if queries.len() == 0 {
+        if queries.is_empty() {
             return Ok(None);
         }
         Ok(Some(queries))
@@ -218,18 +221,10 @@ where
         up: bool,
     ) -> Result<Option<Vec<(i64, Vec<String>)>>> {
         let mut res: Vec<(i64, Vec<String>)> = dir
-            .into_iter()
             .map(|r| r.unwrap())
             .filter(|elem| elem.metadata().unwrap().is_dir())
-            .filter_map(|elem| {
-                match elem
-                    .file_name()
-                    .to_str()
-                    .unwrap()
-                    .splitn(2, "_")
-                    .into_iter()
-                    .nth(0)
-                {
+            .filter_map(
+                |elem| match elem.file_name().to_str().unwrap().splitn(2, '_').next() {
                     Some(timestamp_prefix) => match timestamp_prefix.parse::<i64>() {
                         Ok(timestamp) => {
                             let counter = *history.get(&timestamp).unwrap_or(&0);
@@ -248,8 +243,8 @@ where
                         Err(_) => None,
                     },
                     None => None,
-                }
-            })
+                },
+            )
             .map(|m| {
                 let queries = match Self::parse_cql_file(m.1.clone())? {
                     Some(v) => v,
@@ -264,7 +259,7 @@ where
                 Ok((m.0, queries))
             })
             .collect::<Result<Vec<(i64, Vec<String>)>>>()?;
-        if res.len() == 0 {
+        if res.is_empty() {
             return Ok(None);
         }
         if up {

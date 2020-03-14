@@ -1,16 +1,16 @@
 use crate::database::{NETWORK_TOPOLOGY_STRATEGY, SIMPLE_STRATEGY};
 use clap::{App, Arg, SubCommand};
 
-pub const CMD_INIT: &'static str = "init";
-pub const CMD_NEW: &'static str = "new";
-pub const CMD_MIGRATE: &'static str = "migrate";
-pub const CMD_RESET: &'static str = "reset";
-pub const CMD_DO: &'static str = "do";
-pub const CMD_UNDO: &'static str = "undo";
-pub const CMD_REDO: &'static str = "redo";
+pub const CMD_INIT: &str = "init";
+pub const CMD_NEW: &str = "new";
+pub const CMD_MIGRATE: &str = "migrate";
+pub const CMD_RESET: &str = "reset";
+pub const CMD_DO: &str = "do";
+pub const CMD_UNDO: &str = "undo";
+pub const CMD_REDO: &str = "redo";
 
-pub const ARG_REPLICATION_STRATEGY: &'static str = "replication_strategy";
-pub const ARG_REPLICATION_FACTOR: &'static str = "replication_factor";
+pub const ARG_REPLICATION_STRATEGY: &str = "replication_strategy";
+pub const ARG_REPLICATION_FACTOR: &str = "replication_factor";
 
 pub fn build() -> App<'static, 'static> {
     let n_arg = Arg::with_name("n").short("n").takes_value(true);

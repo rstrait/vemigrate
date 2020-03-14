@@ -1,3 +1,5 @@
+#![allow(clippy::cognitive_complexity)]
+
 #[macro_use]
 extern crate cdrs;
 #[macro_use]
@@ -18,9 +20,9 @@ use std::fmt::Display;
 use std::fs;
 use std::path::PathBuf;
 
-const MIGRATIONS_DIR_PATH: &'static str = "./migrations";
-const INITIAL_MIGRATION_NAME: &'static str = "initial";
-const GIT_KEEP_FILE: &'static str = ".gitkeep";
+const MIGRATIONS_DIR_PATH: &str = "./migrations";
+const INITIAL_MIGRATION_NAME: &str = "initial";
+const GIT_KEEP_FILE: &str = ".gitkeep";
 
 fn main() {
     let path = PathBuf::from(MIGRATIONS_DIR_PATH);
@@ -132,25 +134,17 @@ fn is_initiated(path: &PathBuf) -> bool {
         return false;
     }
 
-    let dir = match fs::read_dir(path) {
+    let mut dir = match fs::read_dir(path) {
         Ok(v) => v,
         Err(_) => return false,
     };
 
-    dir.into_iter()
-        .find(|entry| match entry {
-            Ok(e) => {
-                e.file_name()
-                    .to_str()
-                    .unwrap()
-                    .splitn(2, "_")
-                    .into_iter()
-                    .nth(1)
-                    == Some(INITIAL_MIGRATION_NAME)
-            }
-            Err(_) => false,
-        })
-        .is_some()
+    dir.any(|entry| match entry {
+        Ok(e) => {
+            e.file_name().to_str().unwrap().splitn(2, '_').nth(1) == Some(INITIAL_MIGRATION_NAME)
+        }
+        Err(_) => false,
+    })
 }
 
 fn initiate(

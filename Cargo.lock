@@ -446,17 +446,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "vemigrate"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "vemigrate-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cdrs 2.2.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "cdrs_helpers_derive 0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "clap 2.33.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "log 0.4.8 (registry+https://github.com/rust-lang/crates.io-index)",
- "vemigrate 0.1.0",
+ "vemigrate 0.1.1",
 ]
 
 [[package]]
