@@ -44,18 +44,18 @@ impl From<io::Error> for Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct MigrationRow {
-    pub id: i64,
-    pub up: bool,
+pub trait MigrationRow {
+    fn is_up(&self) -> bool;
+    fn id(&self) -> i64;
 }
 
 pub trait Store {
-    type StoreError: Into<Error>;
+    type Row: MigrationRow;
+    type Error: std::error::Error + 'static;
 
-    fn get_all(&self) -> std::result::Result<Option<Vec<MigrationRow>>, Self::StoreError>;
-    fn store_one(&self, id: i64, up: bool) -> std::result::Result<(), Self::StoreError>;
-    fn exec(&self, q: &str) -> std::result::Result<(), Self::StoreError>;
+    fn get_all(&self) -> std::result::Result<Option<Vec<Self::Row>>, Self::Error>;
+    fn store_one(&self, id: i64, up: bool) -> std::result::Result<(), Self::Error>;
+    fn exec(&self, q: &str) -> std::result::Result<(), Self::Error>;
 }
 
 pub fn create_empty_migration<P>(name: &str, migrations_dir: P) -> std::io::Result<()>
@@ -150,10 +150,14 @@ where
     }
 
     fn get_migration_history(&self) -> Result<HashMap<i64, isize>> {
-        let res: HashMap<i64, isize> = match self.store.get_all().map_err(Into::into)? {
+        let res: HashMap<i64, isize> = match self
+            .store
+            .get_all()
+            .map_err(|err| Error::Store(Box::new(err)))?
+        {
             Some(migrations) => migrations.into_iter().fold(HashMap::new(), |mut acc, m| {
-                let increment = if m.up { 1 } else { -1 };
-                match acc.entry(m.id.clone()) {
+                let increment = if m.is_up() { 1 } else { -1 };
+                match acc.entry(m.id()) {
                     Entry::Occupied(o) => {
                         *o.into_mut() += increment;
                     }
@@ -272,10 +276,14 @@ where
 
     fn migrate_one(&self, timestamp: i64, queries: Vec<String>, up: bool) -> Result<()> {
         for query in queries {
-            self.store.exec(&query).map_err(Into::into)?;
+            self.store
+                .exec(&query)
+                .map_err(|err| Error::Store(Box::new(err)))?;
         }
 
-        self.store.store_one(timestamp, up).map_err(Into::into)
+        self.store
+            .store_one(timestamp, up)
+            .map_err(|err| Error::Store(Box::new(err)))
     }
 
     pub fn execute_migrations(

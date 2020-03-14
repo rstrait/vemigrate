@@ -3,12 +3,13 @@ use cdrs::cluster::session::{new as new_session, Session};
 use cdrs::cluster::{ClusterTcpConfig, NodeTcpConfigBuilder, TcpConnectionPool};
 use cdrs::load_balancing::RoundRobin;
 use cdrs::query::QueryExecutor;
-use cdrs::types::ByIndex;
-
+use cdrs::types::from_cdrs::FromCDRSByName;
+use cdrs::types::prelude::*;
+use cdrs::Result as CDRSResult;
 use vemigrate::{self, MigrationRow};
 
-use std::fmt::{Display, Error, Formatter};
-use std::{error, fmt, io};
+use std::fmt::{self, Display, Formatter};
+use std::{error, io};
 
 pub const SIMPLE_STRATEGY: &str = "SimpleStrategy";
 pub const NETWORK_TOPOLOGY_STRATEGY: &str = "NetworkTopologyStrategy";
@@ -35,8 +36,8 @@ impl Default for ReplicationStrategy {
 }
 
 impl Display for ReplicationStrategy {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
-        match *self {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
             ReplicationStrategy::Simple => f.write_str(SIMPLE_STRATEGY),
             ReplicationStrategy::NetworkTopology => f.write_str(NETWORK_TOPOLOGY_STRATEGY),
         }
@@ -47,7 +48,6 @@ pub type DbResult<T> = std::result::Result<T, DbError>;
 
 #[derive(Debug)]
 pub enum DbError {
-    NoRows,
     Database(cdrs::Error),
     Io(io::Error),
 }
@@ -56,10 +56,9 @@ impl error::Error for DbError {}
 
 impl fmt::Display for DbError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
+        match self {
             DbError::Io(ref e) => e.fmt(f),
             DbError::Database(ref e) => e.fmt(f),
-            DbError::NoRows => f.write_str("no rows"),
         }
     }
 }
@@ -122,24 +121,42 @@ impl Database {
     }
 }
 
-impl vemigrate::Store for Database {
-    type StoreError = DbError;
+#[derive(Clone, Debug, TryFromRow, PartialEq)]
+pub struct Migration {
+    pub is_up: bool,
+    pub id: i64,
+}
 
-    fn get_all(&self) -> DbResult<Option<Vec<MigrationRow>>> {
-        self.conn
+impl MigrationRow for Migration {
+    fn is_up(&self) -> bool {
+        self.is_up
+    }
+
+    fn id(&self) -> i64 {
+        self.id
+    }
+}
+
+impl vemigrate::Store for Database {
+    type Row = Migration;
+    type Error = DbError;
+
+    fn get_all(&self) -> DbResult<Option<Vec<Self::Row>>> {
+        let res = self
+            .conn
             .query_tw(QUERY_GET_ALL, false, false)?
             .get_body()?
-            .into_rows()
-            .ok_or(DbError::NoRows)?
-            .into_iter()
-            .map(|row| {
-                Ok(MigrationRow {
-                    id: row.by_index(0)?.ok_or(DbError::NoRows)?,
-                    up: row.by_index(1)?.ok_or(DbError::NoRows)?,
-                })
-            })
-            .collect::<DbResult<Vec<MigrationRow>>>()
-            .map(|r| if r.is_empty() { None } else { Some(r) })
+            .into_rows();
+
+        match res {
+            Some(rows) => rows
+                .into_iter()
+                .map(Migration::try_from_row)
+                .collect::<CDRSResult<Vec<Self::Row>>>()
+                .map(Some)
+                .map_err(DbError::from),
+            None => Ok(None),
+        }
     }
 
     fn store_one(&self, id: i64, up: bool) -> DbResult<()> {
