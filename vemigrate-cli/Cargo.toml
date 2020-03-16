@@ -1,8 +1,15 @@
 [package]
 name = "vemigrate-cli"
 version = "0.3.0"
-authors = ["Vuraddo <vuraddo@yahoo.com>"]
+authors = ["Arekkusuva <vuraddo@yahoo.com>"]
 edition = "2018"
+
+description = "Migration CLI for Cassandra and SkyllaDB"
+repository = "https://github.com/rstrait/vemigrate"
+readme = "README.md"
+categories = ["database"]
+keywords = ["migration", "cql", "cli", "cassandra", "cassandradb", "scylla", "scylladb"]
+license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

@@ -1,13 +1,16 @@
 [package]
 name = "vemigrate"
-description = "Provides tools for migration CLI"
 version = "0.3.0"
-keywords = ["migration", "cql"]
-categories = ["database"]
 authors = ["Arekkusuva <vuraddo@yahoo.com>"]
-repository = "https://github.com/rstrait/vemigrate"
-license = "MIT"
 edition = "2018"
+
+description = "Provides tools for migration CLI"
+documentation = "https://docs.rs/vemigrate"
+repository = "https://github.com/rstrait/vemigrate"
+readme = "README.md"
+categories = ["database"]
+keywords = ["migration", "cql"]
+license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
