@@ -5,123 +5,151 @@ extern crate cdrs;
 #[macro_use]
 extern crate cdrs_helpers_derive;
 #[macro_use]
-extern crate clap;
+extern crate log;
 
-use log::{error, info, trace};
+use log::{LevelFilter, Metadata, Record};
 use vemigrate::Migrator;
 
-mod cli;
-mod config;
-mod database;
-mod error;
+mod configs;
+mod store;
 
-use config::DBConf;
-use database::Database;
+use configs::{Command, Configs};
+use store::{ReplicationStrategy, ScyllaStore};
 
 use std::fmt::Display;
 use std::fs;
 use std::path::PathBuf;
 
-const MIGRATIONS_DIR_PATH: &str = "./migrations";
 const INITIAL_MIGRATION_NAME: &str = "initial";
-const GIT_KEEP_FILE: &str = ".gitkeep";
+const NEW_FILE_CONTENT: &str = "-- Add your migration query below";
+
+struct SimpleLogger;
+
+impl log::Log for SimpleLogger {
+    fn enabled(&self, _: &Metadata) -> bool {
+        true
+    }
+
+    fn log(&self, record: &Record) {
+        println!("{} - {}", record.level(), record.args());
+    }
+
+    fn flush(&self) {}
+}
+
+static LOGGER: SimpleLogger = SimpleLogger;
 
 fn main() {
-    let path = PathBuf::from(MIGRATIONS_DIR_PATH);
-    let matches = cli::build().get_matches();
+    let cfg = Configs::parse();
 
-    match matches.subcommand() {
-        // Create migrations directory, and initial migration
-        (cli::CMD_INIT, Some(args)) => {
-            trace!("init");
-            if is_initiated(&path) {
-                return fatal_err("already initiated");
+    let level = match cfg.verbose {
+        0 => LevelFilter::Info,
+        1 => LevelFilter::Error,
+        2 => LevelFilter::Warn,
+        3 => LevelFilter::Info,
+        4 => LevelFilter::Debug,
+        _ => LevelFilter::Trace,
+    };
+
+    log::set_logger(&LOGGER)
+        .map(|()| log::set_max_level(level))
+        .expect("configure logger");
+
+    match cfg.cmd {
+        // Create migrations directory, and initial migration.
+        Command::Init(args) => {
+            if cfg.path.exists() {
+                return fatal_err("migrations dir already exists");
             }
 
-            let replication_strategy = database::ReplicationStrategy::from_str(
-                args.value_of(cli::ARG_REPLICATION_STRATEGY).unwrap(),
+            let replication_strategy =
+                ReplicationStrategy::from_str(&args.replication_strategy).unwrap();
+            let migration_path = initiate(
+                &cfg.path,
+                &cfg.db.keyspace,
+                replication_strategy,
+                args.replication_factor,
             )
-            .unwrap();
-            let replication_factor: usize =
-                value_t!(args, cli::ARG_REPLICATION_FACTOR, usize).unwrap_or_else(fatal_err);
-            initiate(path, replication_strategy, replication_factor).unwrap_or_else(fatal_err)
+            .unwrap_or_else(fatal_err);
+            info!("{} was created", migration_path.display())
         }
         // Create new migration with empty `up` and `down` files
-        (cli::CMD_NEW, Some(args)) => {
-            trace!("new migration");
-            vemigrate::create_empty_migration(args.value_of("name").unwrap(), path)
-                .unwrap_or_else(fatal_err)
+        Command::New(args) => {
+            if !cfg.path.exists() {
+                return fatal_err("please do `cargo-cli init` first");
+            }
+
+            let migration_path = vemigrate::create_migration(
+                &args.name,
+                cfg.path,
+                NEW_FILE_CONTENT,
+                NEW_FILE_CONTENT,
+            )
+            .unwrap_or_else(fatal_err);
+            info!("{} was created", migration_path.display())
         }
         // Check another subcommands that require db instance
-        (cmd, args) => {
-            if !is_initiated(&path) {
-                return fatal_err("need to run `init` first");
+        cmd => {
+            if !cfg.path.exists() {
+                return fatal_err("please do `cargo-cli init` first");
             }
 
             // Create Migrator instance with Scylla as a store for migrations
-            let db_conf = DBConf::parse().unwrap_or_else(fatal_err);
-            let db = Database::with_session(&db_conf.addr, &db_conf.user, &db_conf.pwd)
-                .unwrap_or_else(fatal_err);
-            let migrator = Migrator::with_store(path.to_str().unwrap(), db);
+            let db = ScyllaStore::with_session(
+                &cfg.db.node,
+                &cfg.db.keyspace,
+                &cfg.db.user,
+                &cfg.db.password,
+            )
+            .unwrap_or_else(fatal_err);
+            let migrator = Migrator::with_store(&cfg.path, db);
 
-            // Do stuff based on subcommand
+            // Do stuff depends on subcommand
             match cmd {
-                cli::CMD_MIGRATE => {
-                    trace!("execute all pending migrations");
+                Command::Migrate => {
+                    info!("execute pending migrations");
                     match migrator.migrate_up() {
-                        Ok(Some(n)) => info!("{} migrations executed", n),
+                        Ok(Some(id)) => info!("migrated up to {}", id),
                         Ok(None) => info!("no pending migrations found"),
                         Err(err) => fatal_err(err),
                     };
                 }
-                cli::CMD_RESET => {
-                    trace!("rollback all migrations");
+                Command::Reset => {
+                    info!("rollback all migrations");
                     match migrator.migrate_down() {
-                        Ok(Some(n)) => info!("{} migrations rolled back", n),
+                        Ok(Some(id)) => info!("migrated down to {}", id),
                         Ok(None) => info!("no migrations found"),
                         Err(err) => fatal_err(err),
                     };
                 }
-                cli::CMD_DO => {
-                    let n: usize = args
-                        .unwrap()
-                        .value_of("n")
-                        .unwrap()
-                        .parse()
-                        .unwrap_or_else(fatal_err);
-                    trace!("execute {} migrations", n);
-                    match migrator.migrate_up_n(n) {
-                        Ok(Some(n)) => info!("{} migrations executed", n),
+                Command::Do(n) => {
+                    info!("execute {} migrations", n.count);
+                    match migrator.migrate_up_n(n.count) {
+                        Ok(Some(id)) => info!("migrated up to {}", id),
                         Ok(None) => info!("no pending migrations found"),
                         Err(err) => fatal_err(err),
                     };
                 }
-                cli::CMD_UNDO => {
-                    let n: usize = args
-                        .unwrap()
-                        .value_of("n")
-                        .unwrap()
-                        .parse()
-                        .unwrap_or_else(fatal_err);
-                    trace!("rollback {} migrations", n);
-                    match migrator.migrate_down_n(n) {
-                        Ok(Some(n)) => info!("{} migrations rolled back", n),
+                Command::Undo(n) => {
+                    info!("rollback {} migrations", n.count);
+                    match migrator.migrate_down_n(n.count) {
+                        Ok(Some(id)) => info!("migrated down to {}", id),
                         Ok(None) => info!("no migrations found"),
                         Err(err) => fatal_err(err),
                     };
                 }
-                cli::CMD_REDO => {
-                    trace!("redo the last migration");
+                Command::Redo => {
+                    info!("redo the last migration");
                     match migrator.migrate_down_n(1) {
                         Ok(Some(_)) => {
-                            info!("1 migration rolled back");
+                            info!("the last migration was rolled back");
                             match migrator.migrate_up_n(1) {
-                                Ok(Some(_)) => info!("1 migration executed"),
+                                Ok(Some(_)) => info!("the last migration was executed"),
                                 Ok(None) => fatal_err("no pending migrations found"),
                                 Err(err) => fatal_err(err),
                             };
                         }
-                        Ok(None) => info!("no migrations found"),
+                        Ok(None) => info!("no pending migrations found"),
                         Err(err) => fatal_err(err),
                     };
                 }
@@ -131,46 +159,27 @@ fn main() {
     }
 }
 
-fn is_initiated(path: &PathBuf) -> bool {
-    if !path.exists() || !path.join(GIT_KEEP_FILE).exists() {
-        return false;
-    }
-
-    let mut dir = match fs::read_dir(path) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-
-    dir.any(|entry| match entry {
-        Ok(e) => {
-            e.file_name().to_str().unwrap().splitn(2, '_').nth(1) == Some(INITIAL_MIGRATION_NAME)
-        }
-        Err(_) => false,
-    })
-}
-
 fn initiate(
-    path: PathBuf,
-    replication_strategy: database::ReplicationStrategy,
+    path: &PathBuf,
+    keyspace: &str,
+    replication_strategy: ReplicationStrategy,
     replication_factor: usize,
-) -> std::io::Result<()> {
+) -> std::io::Result<PathBuf> {
     if !path.exists() {
-        create_migrations_dir(&path)?;
+        create_migrations_dir(path)?;
     }
 
     vemigrate::create_migration(
         INITIAL_MIGRATION_NAME,
         path,
-        database::Database::initial_migration_up(replication_strategy, replication_factor),
-        database::Database::initial_migration_down(),
-    )?;
-    Ok(())
+        ScyllaStore::initial_migration_up(keyspace, replication_strategy, replication_factor),
+        ScyllaStore::initial_migration_down(keyspace),
+    )
 }
 
 fn create_migrations_dir(path: &PathBuf) -> std::io::Result<()> {
     println!("creating migrations directory at: {}", path.display());
     fs::create_dir(&path)?;
-    fs::File::create(path.join(GIT_KEEP_FILE))?;
     Ok(())
 }
 

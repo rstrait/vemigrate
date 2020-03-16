@@ -1,6 +1,6 @@
 [package]
 name = "vemigrate-cli"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Vuraddo <vuraddo@yahoo.com>"]
 edition = "2018"
 
@@ -11,6 +11,7 @@ log = "0.4"
 clap = "2.33.0"
 cdrs = "2.1.0"
 cdrs_helpers_derive = "0.3.0"
+structopt = "0.3"
 
 [dependencies.vemigrate]
 path = "../vemigrate"

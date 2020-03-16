@@ -1,10 +1,12 @@
 #![allow(clippy::type_complexity)]
 
+use std::borrow::Cow;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fs::{File, ReadDir};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{error, fmt, fs, io};
 
 pub const MIGRATION_FILE_UP: &str = "up.cql";
@@ -14,8 +16,6 @@ const COMMENT_LENGTH: usize = 2;
 const COMMENT_LINE_TYPE_1: &str = "--";
 const COMMENT_LINE_TYPE_2: &str = "//";
 const QUERIES_SEPARATOR: char = ';';
-
-const NEW_FILE_CONTENT: &str = "-- Add your migration query below";
 
 #[derive(Debug)]
 pub enum Error {
@@ -45,8 +45,8 @@ impl From<io::Error> for Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub trait MigrationRow {
+    fn id(&self) -> u64;
     fn is_up(&self) -> bool;
-    fn id(&self) -> i64;
 }
 
 pub trait Store {
@@ -54,15 +54,8 @@ pub trait Store {
     type Error: std::error::Error + 'static;
 
     fn get_all(&self) -> std::result::Result<Option<Vec<Self::Row>>, Self::Error>;
-    fn store_one(&self, id: i64, up: bool) -> std::result::Result<(), Self::Error>;
+    fn add(&self, id: u64, up: bool) -> std::result::Result<(), Self::Error>;
     fn exec(&self, q: &str) -> std::result::Result<(), Self::Error>;
-}
-
-pub fn create_empty_migration<P>(name: &str, migrations_dir: P) -> std::io::Result<()>
-where
-    P: AsRef<Path>,
-{
-    create_migration(name, migrations_dir, NEW_FILE_CONTENT, NEW_FILE_CONTENT)
 }
 
 pub fn create_migration<P, Q>(
@@ -70,19 +63,25 @@ pub fn create_migration<P, Q>(
     migrations_dir: P,
     q_up: Q,
     q_down: Q,
-) -> std::io::Result<()>
+) -> std::io::Result<PathBuf>
 where
     P: AsRef<Path>,
     Q: AsRef<[u8]>,
 {
-    let migration_path = migrations_dir.as_ref().join(name);
+    let unix_timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("get unix timestamp");
+    let migration_path =
+        migrations_dir
+            .as_ref()
+            .join(format!("{}_{}", unix_timestamp.as_secs(), name));
     fs::create_dir_all(&migration_path)?;
     create_migration_file(migration_path.join(MIGRATION_FILE_UP), Some(q_up.as_ref()))?;
     create_migration_file(
         migration_path.join(MIGRATION_FILE_DOWN),
         Some(q_down.as_ref()),
     )?;
-    Ok(())
+    Ok(migration_path)
 }
 
 fn create_migration_file(path: PathBuf, q: Option<&[u8]>) -> std::io::Result<()> {
@@ -94,19 +93,19 @@ fn create_migration_file(path: PathBuf, q: Option<&[u8]>) -> std::io::Result<()>
     Ok(())
 }
 
-pub struct Migrator<S>
-where
-    S: Store,
-{
-    path: PathBuf,
+pub struct Migrator<'a, S> {
+    path: Cow<'a, Path>,
     store: S,
 }
 
-impl<S> Migrator<S>
+impl<'a, S> Migrator<'a, S>
 where
     S: Store,
 {
-    pub fn with_store(path: &str, store: S) -> Migrator<S> {
+    pub fn with_store<P>(path: P, store: S) -> Self
+    where
+        P: Into<Cow<'a, Path>>,
+    {
         Migrator {
             path: path.into(),
             store,
@@ -114,7 +113,7 @@ where
     }
 
     #[inline]
-    fn migrate_n(&self, up: bool, n: Option<usize>) -> Result<Option<i64>> {
+    fn migrate_n(&self, up: bool, n: Option<usize>) -> Result<Option<u64>> {
         // Try to read migrations dir first
         let dir = fs::read_dir(&self.path)?;
 
@@ -127,30 +126,30 @@ where
 
     /// Migrates up,
     /// returns None if database is already up to date.
-    pub fn migrate_up(&self) -> Result<Option<i64>> {
+    pub fn migrate_up(&self) -> Result<Option<u64>> {
         self.migrate_n(true, None)
     }
 
     /// Migrates down,
     /// returns None if database is already up to date.
-    pub fn migrate_down(&self) -> Result<Option<i64>> {
+    pub fn migrate_down(&self) -> Result<Option<u64>> {
         self.migrate_n(false, None)
     }
 
     /// Migrates up `n` times or less,
     /// returns None if database is already up to date.
-    pub fn migrate_up_n(&self, n: usize) -> Result<Option<i64>> {
+    pub fn migrate_up_n(&self, n: usize) -> Result<Option<u64>> {
         self.migrate_n(true, Some(n))
     }
 
     /// Migrates down `n` times or less,
     /// returns None if database is already up to date.
-    pub fn migrate_down_n(&self, n: usize) -> Result<Option<i64>> {
+    pub fn migrate_down_n(&self, n: usize) -> Result<Option<u64>> {
         self.migrate_n(false, Some(n))
     }
 
-    fn get_migration_history(&self) -> Result<HashMap<i64, isize>> {
-        let res: HashMap<i64, isize> = match self
+    fn get_migration_history(&self) -> Result<HashMap<u64, isize>> {
+        let res: HashMap<u64, isize> = match self
             .store
             .get_all()
             .map_err(|err| Error::Store(Box::new(err)))?
@@ -172,11 +171,6 @@ where
         Ok(res)
     }
 
-    fn is_cql_comment_line(line: &str) -> bool {
-        let comment_slice = &line[..COMMENT_LENGTH];
-        comment_slice == COMMENT_LINE_TYPE_1 || comment_slice == COMMENT_LINE_TYPE_2
-    }
-
     fn parse_cql_file(path: PathBuf) -> Result<Option<Vec<String>>> {
         let file = File::open(path)?;
 
@@ -192,7 +186,7 @@ where
             }
 
             let trimmed = buf.trim();
-            if !trimmed.is_empty() && !Self::is_cql_comment_line(trimmed) {
+            if !trimmed.is_empty() && !is_cql_comment_line(trimmed) {
                 if is_new_query {
                     queries.push(String::new());
                 }
@@ -221,15 +215,15 @@ where
     fn filter_migrations(
         &self,
         dir: ReadDir,
-        history: HashMap<i64, isize>,
+        history: HashMap<u64, isize>,
         up: bool,
-    ) -> Result<Option<Vec<(i64, Vec<String>)>>> {
-        let mut res: Vec<(i64, Vec<String>)> = dir
+    ) -> Result<Option<Vec<(u64, Vec<String>)>>> {
+        let mut res: Vec<(u64, Vec<String>)> = dir
             .map(|r| r.unwrap())
             .filter(|elem| elem.metadata().unwrap().is_dir())
             .filter_map(
                 |elem| match elem.file_name().to_str().unwrap().splitn(2, '_').next() {
-                    Some(timestamp_prefix) => match timestamp_prefix.parse::<i64>() {
+                    Some(timestamp_prefix) => match timestamp_prefix.parse::<u64>() {
                         Ok(timestamp) => {
                             let counter = *history.get(&timestamp).unwrap_or(&0);
                             if up && counter == 0 || (!up && counter == 1) {
@@ -262,7 +256,7 @@ where
 
                 Ok((m.0, queries))
             })
-            .collect::<Result<Vec<(i64, Vec<String>)>>>()?;
+            .collect::<Result<Vec<(u64, Vec<String>)>>>()?;
         if res.is_empty() {
             return Ok(None);
         }
@@ -274,24 +268,34 @@ where
         Ok(Some(res))
     }
 
-    fn migrate_one(&self, timestamp: i64, queries: Vec<String>, up: bool) -> Result<()> {
+    fn migrate_one(
+        &self,
+        timestamp: u64,
+        queries: Vec<String>,
+        up: bool,
+        add_history: bool,
+    ) -> Result<()> {
         for query in queries {
             self.store
                 .exec(&query)
                 .map_err(|err| Error::Store(Box::new(err)))?;
         }
 
-        self.store
-            .store_one(timestamp, up)
-            .map_err(|err| Error::Store(Box::new(err)))
+        if add_history {
+            return self
+                .store
+                .add(timestamp, up)
+                .map_err(|err| Error::Store(Box::new(err)));
+        }
+        Ok(())
     }
 
     pub fn execute_migrations(
         &self,
-        migration_to_execute: Vec<(i64, Vec<String>)>,
+        migration_to_execute: Vec<(u64, Vec<String>)>,
         up: bool,
         n: Option<usize>,
-    ) -> Result<Option<i64>> {
+    ) -> Result<Option<u64>> {
         let (last_id, take_n) = match n {
             Some(v) => {
                 if migration_to_execute.len() > v {
@@ -309,10 +313,16 @@ where
             ),
         };
 
+        let add_history = up || take_n != migration_to_execute.len();
         for (timestamp, queries) in migration_to_execute.into_iter().take(take_n) {
-            self.migrate_one(timestamp, queries, up)?;
+            self.migrate_one(timestamp, queries, up, add_history)?;
         }
 
         Ok(Some(last_id))
     }
+}
+
+fn is_cql_comment_line(line: &str) -> bool {
+    let comment_slice = &line[..COMMENT_LENGTH];
+    comment_slice == COMMENT_LINE_TYPE_1 || comment_slice == COMMENT_LINE_TYPE_2
 }
