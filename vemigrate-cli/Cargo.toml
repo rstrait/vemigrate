@@ -1,10 +1,11 @@
 [package]
 name = "vemigrate-cli"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["Arekkusuva <vuraddo@yahoo.com>"]
 edition = "2018"
 
 description = "Migration CLI for Cassandra and SkyllaDB"
+homepage = "https://github.com/rstrait/vemigrate"
 repository = "https://github.com/rstrait/vemigrate"
 readme = "README.md"
 categories = ["database"]
